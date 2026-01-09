@@ -19,7 +19,8 @@ class DHIS2Service {
       },
       headers: {
         'Content-Type': 'application/json'
-      }
+      },
+      timeout: 30000 // 30 second timeout
     };
 
     // Handle DNS resolution issue for histracker.health.go.ke
@@ -75,7 +76,8 @@ class DHIS2Service {
       const response = await this.client.post('/api/tracker', payload, {
         params: {
           async: false,
-          importStrategy: 'CREATE_AND_UPDATE'
+          importStrategy: 'CREATE_AND_UPDATE',
+          orgUnitIdScheme: 'CODE'
         }
       });
 
@@ -92,20 +94,17 @@ class DHIS2Service {
     } catch (error) {
       if (error.response) {
         const errorData = error.response.data;
-        logger.error('DHIS2 API error:', {
-          status: error.response.status,
-          statusText: error.response.statusText,
-          data: errorData
-        });
         
-        // Log validation errors if present
-        if (errorData && errorData.response && errorData.response.importSummaries) {
-          errorData.response.importSummaries.forEach(summary => {
-            if (summary.conflicts) {
-              summary.conflicts.forEach(conflict => {
-                logger.error(`DHIS2 Conflict: ${conflict.object} - ${conflict.value}`);
-              });
-            }
+        // Log full error response for debugging
+        console.error('\n=== DHIS2 ERROR RESPONSE ===');
+        console.error('Status:', error.response.status);
+        console.error('Response:', JSON.stringify(errorData, null, 2));
+        console.error('============================\n');
+        
+        // Log validation errors from tracker API
+        if (errorData && errorData.validationReport && errorData.validationReport.errorReports) {
+          errorData.validationReport.errorReports.forEach(report => {
+            logger.error(`DHIS2 Validation Error: ${report.message}`);
           });
         }
       } else {
@@ -152,3 +151,4 @@ class DHIS2Service {
 }
 
 module.exports = DHIS2Service;
+

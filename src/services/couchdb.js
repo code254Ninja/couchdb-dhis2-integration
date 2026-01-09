@@ -63,10 +63,15 @@ class CouchDBService {
     });
 
     feed.on('change', (change) => {
-      // Filter for death_review forms
-      if (change.doc && change.doc.form === 'death_review' && !change.deleted) {
-        logger.info(`New death_review detected: ${change.id}`);
-        callback(change.doc, change.seq);
+      // Filter for death_review and cha_verbal_autopsy forms
+      if (change.doc && !change.deleted) {
+        if (change.doc.form === 'death_review') {
+          logger.info(`New death_review detected: ${change.id}`);
+          callback(change.doc, change.seq);
+        } else if (change.doc.form === 'cha_verbal_autopsy') {
+          logger.info(`New cha_verbal_autopsy detected: ${change.id}`);
+          callback(change.doc, change.seq);
+        }
       }
     });
 

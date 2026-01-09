@@ -39,7 +39,11 @@ class IntegrationService {
       
       // Initialize DHIS2 client
       this.dhis2.initialize();
-      await this.dhis2.testConnection();
+      try {
+        await this.dhis2.testConnection();
+      } catch (error) {
+        logger.warn('DHIS2 connection test failed - will attempt to post events when they arrive:', error.message);
+      }
       
       // Log sync stats
       const stats = this.syncState.getStats();
@@ -66,26 +70,41 @@ class IntegrationService {
         return;
       }
 
-      logger.info(`Processing death review: ${doc._id}`);
+      const formType = doc.form || 'unknown';
+      logger.info(`Processing ${formType}: ${doc._id}`);
 
       // Transform to DHIS2 event format
-      const event = fieldMapping.transformToTrackerEvent(doc, {
+      const result = fieldMapping.transformToTrackerEvent(doc, {
         program: process.env.DHIS2_PROGRAM,
         programStage: process.env.DHIS2_PROGRAM_STAGE,
         orgUnit: process.env.DHIS2_ORG_UNIT
       });
 
-      // Don't set event ID - let DHIS2 auto-generate valid UIDs
-      // Track using CouchDB document ID instead
-      logger.debug('Transformed event:', JSON.stringify(event, null, 2));
+      // Check if transformation returned null (document doesn't meet criteria)
+      if (!result) {
+        logger.info(`Document ${doc._id} skipped - does not meet sync criteria`);
+        return;
+      }
 
-      // Post to DHIS2
-      const result = await this.dhis2.postEvent(event);
+      // Handle both single events and arrays of events
+      const events = Array.isArray(result) ? result : [result];
+      
+      logger.debug(`Transformed to ${events.length} event(s):`, JSON.stringify(events, null, 2));
+
+      // Post each event to DHIS2
+      const responses = [];
+      for (const event of events) {
+        logger.info(`Posting event to program ${event.program}`);
+        const response = await this.dhis2.postEvent(event);
+        responses.push(response);
+      }
 
       // Mark as synced
       this.syncState.markDocumentSynced(doc._id, {
-        dhis2EventId: event.event || 'auto-generated',
-        dhis2Response: result.status
+        dhis2EventId: events.map(e => e.event || 'auto-generated').join(','),
+        dhis2Programs: events.map(e => e.program).join(','),
+        eventCount: events.length,
+        dhis2Response: responses.map(r => r.status).join(',')
       });
 
       // Update sequence only if provided (not during backfill)
@@ -93,7 +112,7 @@ class IntegrationService {
         this.syncState.updateLastSeq(seq);
       }
 
-      logger.info(`Successfully synced document ${doc._id} to DHIS2`);
+      logger.info(`Successfully synced document ${doc._id} to DHIS2 (${events.length} event(s))`);
     } catch (error) {
       logger.error(`Failed to process document ${doc._id}:`, error);
       // Don't throw - continue processing other documents

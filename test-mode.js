@@ -41,22 +41,31 @@ class TestIntegrationService {
     }
   }
 
-  async processDeathReview(doc, seq) {
+  async processDocument(doc, seq) {
     try {
       if (this.syncState.isDocumentSynced(doc._id)) {
         logger.debug(`Document ${doc._id} already processed, skipping`);
         return;
       }
 
+      const formType = doc.form || 'unknown';
       console.log(`\n${'='.repeat(70)}`);
-      console.log(`Processing death review: ${doc._id}`);
+      console.log(`Processing ${formType}: ${doc._id}`);
       console.log(`${'='.repeat(70)}`);
 
       // Transform to DHIS2 event format
       const event = fieldMapping.transformToTrackerEvent(doc, {
         program: process.env.DHIS2_PROGRAM,
+        programStage: process.env.DHIS2_PROGRAM_STAGE,
         orgUnit: process.env.DHIS2_ORG_UNIT
       });
+
+      // Check if transformation returned null (e.g., non-maternal death for VA)
+      if (!event) {
+        console.log(`\n⚠️  Document skipped - does not meet criteria for DHIS2 sync`);
+        console.log(`   (e.g., non-maternal death for verbal autopsy)\n`);
+        return;
+      }
 
       event.event = `medic-${doc._id}`;
 
@@ -69,17 +78,27 @@ class TestIntegrationService {
       const review = fields.group_review || {};
       
       console.log('\n📊 Summary:');
-      console.log(`  Patient: ${fields.patient_name || 'N/A'}`);
+      console.log(`  Form Type: ${formType}`);
+      console.log(`  Patient: ${fields.patient_name || fields.patient_name_display || 'N/A'}`);
       console.log(`  Age: ${fields.patient_age_in_years || 'N/A'} years`);
       console.log(`  Sex: ${fields.patient_sex || 'N/A'}`);
       console.log(`  Date of Death: ${fields.date_of_death || 'N/A'}`);
-      console.log(`  Place: ${review.place_of_death || 'N/A'}`);
-      console.log(`  Cause: ${review.probable_cause_of_death || 'N/A'}`);
+      
+      if (formType === 'death_review') {
+        console.log(`  Place: ${review.place_of_death || 'N/A'}`);
+        console.log(`  Cause: ${review.probable_cause_of_death || 'N/A'}`);
+      } else if (formType === 'cha_verbal_autopsy') {
+        console.log(`  Pregnant at Death: ${fields.pregnant_at_death || 'N/A'}`);
+        console.log(`  Cause: ${fields.cause_of_death || fields.possible_cause_of_death || 'N/A'}`);
+        console.log(`  Medical Condition: ${fields.known_medical_condition || 'N/A'}`);
+      }
+      
       console.log(`  Data Values: ${event.dataValues.length} fields mapped`);
       
       console.log('\n✓ Would be posted to DHIS2 Tracker API');
       console.log(`  Endpoint: ${process.env.DHIS2_URL}/api/tracker`);
-      console.log(`  Program: ${process.env.DHIS2_PROGRAM}`);
+      console.log(`  Program: ${event.program}`);
+      console.log(`  Program Stage: ${event.programStage}`);
       console.log(`  Org Unit: ${process.env.DHIS2_ORG_UNIT}\n`);
 
       // Mark as synced (in test mode)
@@ -93,6 +112,7 @@ class TestIntegrationService {
       logger.info(`Test processed document ${doc._id}`);
     } catch (error) {
       logger.error(`Failed to process document ${doc._id}:`, error);
+      console.error('\n❌ Error details:', error.message);
     }
   }
 
@@ -103,11 +123,11 @@ class TestIntegrationService {
 
     try {
       const lastSeq = this.syncState.getLastSeq();
-      console.log(`\n👀 Watching for death_review submissions from sequence: ${lastSeq}`);
-      console.log('Submit a death_review form in the app to see the transformation...\n');
+      console.log(`\n👀 Watching for death_review and cha_verbal_autopsy submissions from sequence: ${lastSeq}`);
+      console.log('Submit a death_review or cha_verbal_autopsy form in the app to see the transformation...\n');
 
       await this.couchdb.watchChanges(
-        (doc, seq) => this.processDeathReview(doc, seq),
+        (doc, seq) => this.processDocument(doc, seq),
         lastSeq
       );
 
@@ -118,15 +138,15 @@ class TestIntegrationService {
     }
   }
 
-  async processExisting(limit = 5) {
+  async processExisting(formType = 'death_review', limit = 5) {
     try {
-      console.log(`\n📁 Processing existing death reviews (limit: ${limit})...\n`);
+      console.log(`\n📁 Processing existing ${formType} forms (limit: ${limit})...\n`);
 
-      const docs = await this.couchdb.getDocumentsByForm('death_review', limit);
-      console.log(`Found ${docs.length} death review document(s)\n`);
+      const docs = await this.couchdb.getDocumentsByForm(formType, limit);
+      console.log(`Found ${docs.length} ${formType} document(s)\n`);
 
       for (const doc of docs) {
-        await this.processDeathReview(doc, 'existing');
+        await this.processDocument(doc, 'existing');
         await new Promise(resolve => setTimeout(resolve, 500));
       }
 
